@@ -18,7 +18,6 @@ or
 $ cmd-ntfy rsync -av <source-dir> <dest-dir>
 or
 $ cmd-ntfy df -h
-```bash
 Filesystem      Size  Used Avail Use% Mounted on 
 udev             32G     0   32G   0% /dev 
 tmpfs           6.3G 1012K  6.3G   1% 
