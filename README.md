@@ -16,6 +16,8 @@ Script that runs program and displays info, output, success or fail on command.
 $ cmd-ntfy <command>
 or
 $ cmd-ntfy rsync -av <source-dir> <dest-dir>
+or
+$ cmd-ntfy df -h
 ```bash
 Filesystem      Size  Used Avail Use% Mounted on 
 udev             32G     0   32G   0% /dev 
