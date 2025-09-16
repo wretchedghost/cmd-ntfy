@@ -5,13 +5,19 @@
 # Example: command-notify.sh rsync -av /source /dest
 # Example: command-notify.sh -v zpool status
 
+
 ### SOURCE NOTIFICATION CONFIG
 if [ -f /etc/cron-notify.conf ]; then
     source /etc/cron-notify.conf
 else
     # Default values if config file doesn't exist
-    NTFY_SERVER="ntfy.sh"
-    NTFY_TOPIC="command-notifications"
+    # Example:
+    # NTFY_SERVER="your-ntfy-server.com"
+    # NTFY_TOPIC="your-topic"
+    # NTFY_USER="your-username"  # if needed
+    # NTFY_PASS="your-password"  # if needed
+    NTFY_SERVER=""
+    NTFY_TOPIC=""
     NTFY_USER=""
     NTFY_PASS=""
 fi
