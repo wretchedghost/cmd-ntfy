@@ -12,11 +12,10 @@ Script that runs program and displays info, output, success or fail on command.
 ```
 
 * Run examples:
+* $ cmd-ntfy <command>
+* $ cmd-ntfy rsync -av <source-dir> <dest-dir>
+
 ```bash
-$ cmd-ntfy <command>
-or
-$ cmd-ntfy rsync -av <source-dir> <dest-dir>
-or
 $ cmd-ntfy df -h
 Filesystem      Size  Used Avail Use% Mounted on 
 udev             32G     0   32G   0% /dev 
