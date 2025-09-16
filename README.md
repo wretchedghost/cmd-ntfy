@@ -1,7 +1,7 @@
 # cmd-ntfy
 Script that runs program and displays info, output, success or fail on command.
 
-## How to run
+## Important stuff
 * Copy cmd-ntfy to /usr/local/bin
 * Create and edit /etc/cron-notify.conf
 ```bash
@@ -11,7 +11,7 @@ Script that runs program and displays info, output, success or fail on command.
     NTFY_PASS=""  # optional 
 ```
 
-* Run examples:
+### Run examples:
 * $ cmd-ntfy <command>
 * $ cmd-ntfy rsync -av <source-dir> <dest-dir>
 
