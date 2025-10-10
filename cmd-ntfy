@@ -1,10 +1,12 @@
 #!/bin/bash
-# command-notify.sh
+# cmd-ntfy
+# Version: 1.0.0
 # Description: Wrapper script that runs any command and sends ntfy notifications on completion
-# Usage: command-notify.sh [-v|--verbose] <command> [arguments...]
-# Example: command-notify.sh rsync -av /source /dest
-# Example: command-notify.sh -v zpool status
+# Usage: cmd-ntfy [-v|--verbose] <command> [arguments...]
+# Example: cmd-ntfy rsync -av /source /dest
+# Example: cmd-ntfy -v zpool status
 
+VERSION="1.0.0"
 
 ### SOURCE NOTIFICATION CONFIG
 if [ -f /etc/cron-notify.conf ]; then
@@ -25,13 +27,56 @@ fi
 # Full paths for utilities
 curl=/usr/bin/curl
 date=/bin/date
+hostname=/usr/bin/hostname
 
-# Parse verbose option
+# Get hostname
+HOSTNAME=$($hostname)
+
+# Parse options
 VERBOSE=false
-if [[ "$1" == "-v" || "$1" == "--verbose" ]]; then
-    VERBOSE=true
-    shift
-fi
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -v|--verbose)
+            VERBOSE=true
+            shift
+            ;;
+        --version)
+            echo "cmd-ntfy version $VERSION"
+            exit 0
+            ;;
+        -h|--help)
+            echo "cmd-ntfy v$VERSION - Command wrapper with ntfy notifications"
+            echo ""
+            echo "Usage: cmd-ntfy [OPTIONS] <command> [arguments...]"
+            echo ""
+            echo "Options:"
+            echo "  -v, --verbose    Show all output (default: limit to 30 lines)"
+            echo "  --version        Show version information"
+            echo "  -h, --help       Show this help message"
+            echo ""
+            echo "Examples:"
+            echo "  cmd-ntfy rsync -av /source /dest"
+            echo "  cmd-ntfy -v zpool status"
+            echo "  cmd-ntfy apt update"
+            echo ""
+            echo "Configuration:"
+            echo "  Create /etc/cron-notify.conf with:"
+            echo "    NTFY_SERVER=\"your-ntfy-server.com\""
+            echo "    NTFY_TOPIC=\"your-topic\""
+            echo "    NTFY_USER=\"username\"  # optional"
+            echo "    NTFY_PASS=\"password\"  # optional"
+            exit 0
+            ;;
+        -*)
+            echo "Unknown option: $1"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
 
 # Function to send ntfy notifications
 send_notification() {
@@ -79,10 +124,18 @@ sanitize_command() {
 
 # Check if at least one argument is provided
 if [ $# -eq 0 ]; then
-    echo "Usage: $0 [-v|--verbose] <command> [arguments...]"
-    echo "  -v, --verbose  Show all output (default: limit to 30 lines)"
-    echo "Example: $0 rsync -av /source /dest"
-    echo "Example: $0 -v zpool status"
+    echo "cmd-ntfy v$VERSION - Command wrapper with ntfy notifications"
+    echo ""
+    echo "Usage: cmd-ntfy [OPTIONS] <command> [arguments...]"
+    echo ""
+    echo "Options:"
+    echo "  -v, --verbose    Show all output (default: limit to 30 lines)"
+    echo "  --version        Show version information"
+    echo "  -h, --help       Show this help message"
+    echo ""
+    echo "Examples:"
+    echo "  cmd-ntfy rsync -av /source /dest"
+    echo "  cmd-ntfy -v zpool status"
     exit 1
 fi
 
@@ -96,7 +149,7 @@ START_TIME_HUMAN=$($date)
 
 # Optional: Send start notification (uncomment if desired)
 # SANITIZED_CMD=$(sanitize_command "$FULL_COMMAND")
-# send_notification "🔄 Command Started: $COMMAND_NAME" "Command: $SANITIZED_CMD"$'\n'"Started: $START_TIME_HUMAN"
+# send_notification "🔄 Command Started: $COMMAND_NAME" "Host: $HOSTNAME"$'\n'"Command: $SANITIZED_CMD"$'\n'"Started: $START_TIME_HUMAN"
 
 # Execute the command and capture output and exit code
 OUTPUT_FILE=$(mktemp)
@@ -137,8 +190,9 @@ SANITIZED_CMD=$(sanitize_command "$FULL_COMMAND")
 
 # Send notification based on exit code
 if [ $EXIT_CODE -eq 0 ]; then
-    # Success notification - using actual newlines instead of \n
-    MESSAGE="✅ Command: $SANITIZED_CMD
+    # Success notification
+    MESSAGE="🖥️ Host: $HOSTNAME
+✅ Command: $SANITIZED_CMD
 ⏱️ Duration: $DURATION_HUMAN
 🕒 Completed: $END_TIME_HUMAN"
     
@@ -155,10 +209,11 @@ $OUTPUT_PREVIEW"
 ℹ️ $OUTPUT_NOTE"
     fi
     
-    send_notification "✅ $COMMAND_NAME Completed" "$MESSAGE"
+    send_notification "✅ $COMMAND_NAME Completed on $HOSTNAME" "$MESSAGE"
 else
-    # Failure notification - using actual newlines instead of \n
-    MESSAGE="❌ Command: $SANITIZED_CMD
+    # Failure notification
+    MESSAGE="🖥️ Host: $HOSTNAME
+❌ Command: $SANITIZED_CMD
 💥 Exit code: $EXIT_CODE
 ⏱️ Duration: $DURATION_HUMAN
 🕒 Failed: $END_TIME_HUMAN"
@@ -176,7 +231,7 @@ $OUTPUT_PREVIEW"
 ℹ️ $OUTPUT_NOTE"
     fi
     
-    send_notification "❌ $COMMAND_NAME Failed" "$MESSAGE" "high"
+    send_notification "❌ $COMMAND_NAME Failed on $HOSTNAME" "$MESSAGE" "high"
 fi
 
 # Exit with the same code as the wrapped command
