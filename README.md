@@ -35,3 +35,30 @@ tmpfs           6.3G  8.0K  6.3G   1% /run/user/1000
 {"id...
 ```
 After the "id..." is the relevant information sent to your ntfy instance.
+
+## Installation:
+```bash
+# Copy to /usr/local/bin
+sudo cp cmd-ntfy /usr/local/bin/cmd-ntfy
+sudo chmod +x /usr/local/bin/cmd-ntfy
+
+# Now you can use it from anywhere:
+cmd-ntfy zpool status
+cmd-ntfy -v apt update
+cmd-ntfy --version
+cmd-ntfy --help
+```
+
+## Usage Examples:
+```bash
+# Show version
+cmd-ntfy --version
+
+# Show help
+cmd-ntfy --help
+
+# Run commands
+cmd-ntfy rsync -av /source /dest
+cmd-ntfy -v zpool status
+cmd-ntfy apt update
+```
