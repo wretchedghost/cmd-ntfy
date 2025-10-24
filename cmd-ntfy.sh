@@ -1,0 +1,267 @@
+#!/bin/bash
+# cmd-ntfy
+# Version: 1.1.0
+# Description: Wrapper script that runs any command and sends ntfy notifications on completion
+# Usage: cmd-ntfy [-v|--verbose] [-t|--tty] <command> [arguments...]
+# Example: cmd-ntfy rsync -av /source /dest
+# Example: cmd-ntfy -v zpool status
+# Example: cmd-ntfy -t syncoid -r tank0/enc vault/enc
+# 
+# Changelog:
+# 1.1.0 - Added -t/--tty flag for pseudo-TTY support (progress bars in rsync/syncoid)
+# 1.0.0 - Initial release with hostname support and 30-line output limit
+
+VERSION="1.1.0"
+
+### SOURCE NOTIFICATION CONFIG
+if [ -f /etc/cron-notify.conf ]; then
+    source /etc/cron-notify.conf
+else
+    # Default values if config file doesn't exist
+    # Example:
+    # NTFY_SERVER="your-ntfy-server.com"
+    # NTFY_TOPIC="your-topic"
+    # NTFY_USER="your-username"  # if needed
+    # NTFY_PASS="your-password"  # if needed
+    NTFY_SERVER=""
+    NTFY_TOPIC=""
+    NTFY_USER=""
+    NTFY_PASS=""
+fi
+
+# Full paths for utilities
+curl=/usr/bin/curl
+date=/bin/date
+hostname=/usr/bin/hostname
+
+# Get hostname
+HOSTNAME=$($hostname)
+
+# Parse options
+VERBOSE=false
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -v|--verbose)
+            VERBOSE=true
+            shift
+            ;;
+        --version)
+            echo "cmd-ntfy version $VERSION"
+            exit 0
+            ;;
+        -h|--help)
+            echo "cmd-ntfy v$VERSION - Command wrapper with ntfy notifications"
+            echo ""
+            echo "Usage: cmd-ntfy [OPTIONS] <command> [arguments...]"
+            echo ""
+            echo "Options:"
+            echo "  -v, --verbose    Show all output (default: limit to 30 lines)"
+            echo "  --version        Show version information"
+            echo "  -h, --help       Show this help message"
+            echo ""
+            echo "Examples:"
+            echo "  cmd-ntfy rsync -av /source /dest"
+            echo "  cmd-ntfy -v zpool status"
+            echo "  cmd-ntfy apt update"
+            echo ""
+            echo "Configuration:"
+            echo "  Create /etc/cron-notify.conf with:"
+            echo "    NTFY_SERVER=\"your-ntfy-server.com\""
+            echo "    NTFY_TOPIC=\"your-topic\""
+            echo "    NTFY_USER=\"username\"  # optional"
+            echo "    NTFY_PASS=\"password\"  # optional"
+            exit 0
+            ;;
+        -*)
+            echo "Unknown option: $1"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+# Function to send ntfy notifications
+send_notification() {
+    local title="$1"
+    local message="$2"
+    local priority="${3:-default}"
+    
+    if [ -n "$NTFY_USER" ] && [ -n "$NTFY_PASS" ]; then
+        $curl -u "$NTFY_USER:$NTFY_PASS" \
+              -H "Title: $title" \
+              -H "Priority: $priority" \
+              -d "$message" \
+              "$NTFY_SERVER/$NTFY_TOPIC" 2>/dev/null
+    else
+        $curl -H "Title: $title" \
+              -H "Priority: $priority" \
+              -d "$message" \
+              "$NTFY_SERVER/$NTFY_TOPIC" 2>/dev/null
+    fi
+}
+
+# Function to get human-readable duration
+get_duration() {
+    local duration=$1
+    local hours=$((duration / 3600))
+    local minutes=$(((duration % 3600) / 60))
+    local seconds=$((duration % 60))
+    
+    if [ $hours -gt 0 ]; then
+        echo "${hours}h ${minutes}m ${seconds}s"
+    elif [ $minutes -gt 0 ]; then
+        echo "${minutes}m ${seconds}s"
+    else
+        echo "${seconds}s"
+    fi
+}
+
+# Function to sanitize command for display (remove sensitive info if needed)
+sanitize_command() {
+    local cmd="$1"
+    # Add any sanitization rules here if needed
+    # For example, mask passwords: cmd=$(echo "$cmd" | sed 's/--password=[^ ]*/--password=****/g')
+    echo "$cmd"
+}
+
+# Check if at least one argument is provided
+if [ $# -eq 0 ]; then
+    echo "cmd-ntfy v$VERSION - Command wrapper with ntfy notifications"
+    echo ""
+    echo "Usage: cmd-ntfy [OPTIONS] <command> [arguments...]"
+    echo ""
+    echo "Options:"
+    echo "  -v, --verbose    Show all output (default: limit to 30 lines)"
+    echo "  --version        Show version information"
+    echo "  -h, --help       Show this help message"
+    echo ""
+    echo "Examples:"
+    echo "  cmd-ntfy rsync -av /source /dest"
+    echo "  cmd-ntfy -v zpool status"
+    exit 1
+fi
+
+# Capture the full command
+FULL_COMMAND="$*"
+COMMAND_NAME=$(basename "$1")
+
+# Record start time
+START_TIME=$(date +%s)
+START_TIME_HUMAN=$($date)
+
+# Optional: Send start notification (uncomment if desired)
+# SANITIZED_CMD=$(sanitize_command "$FULL_COMMAND")
+# send_notification "🔄 Command Started: $COMMAND_NAME" "Host: $HOSTNAME"$'\n'"Command: $SANITIZED_CMD"$'\n'"Started: $START_TIME_HUMAN"
+
+# Execute the command and capture output and exit code
+OUTPUT_FILE=$(mktemp)
+
+if $USE_TTY; then
+    # Check if script command is available
+    if ! command -v script &> /dev/null; then
+        echo "Warning: 'script' command not found. Falling back to standard mode."
+        echo "Install 'util-linux' package for TTY support."
+        USE_TTY=false
+    fi
+fi
+
+if $USE_TTY; then
+    # Use script command to create a pseudo-TTY for progress bars
+    # Build command string with proper quoting to preserve arguments
+    CMD_STRING=$(printf '%q ' "$@")
+    
+    # script outputs to both terminal AND file, so user sees real-time output
+    # -q: quiet mode (no start/stop messages)
+    # -c: run command
+    # Note: output is already displayed to terminal by script
+    script -q -c "$CMD_STRING" "$OUTPUT_FILE"
+    EXIT_CODE=$?
+else
+    # Standard execution with tee (shows real-time output AND captures to file)
+    "$@" 2>&1 | tee "$OUTPUT_FILE"
+    EXIT_CODE=${PIPESTATUS[0]}
+fi
+
+# Record end time and calculate duration
+END_TIME=$(date +%s)
+END_TIME_HUMAN=$($date)
+DURATION=$((END_TIME - START_TIME))
+DURATION_HUMAN=$(get_duration $DURATION)
+
+# Get the complete output and apply line limit if not verbose
+OUTPUT_RAW="$(cat "$OUTPUT_FILE")"
+OUTPUT_SIZE=$(wc -c < "$OUTPUT_FILE")
+OUTPUT_LINES=$(wc -l < "$OUTPUT_FILE")
+
+if $VERBOSE; then
+    # Verbose mode: show all output
+    OUTPUT_PREVIEW="$OUTPUT_RAW"
+    OUTPUT_NOTE=""
+else
+    # Limited mode: show first 30 lines
+    if [ $OUTPUT_LINES -gt 30 ]; then
+        OUTPUT_PREVIEW="$(head -n 30 "$OUTPUT_FILE")"
+        OUTPUT_NOTE="Output limited to 30 lines (total: $OUTPUT_LINES lines, use -v for full output)"
+    else
+        OUTPUT_PREVIEW="$OUTPUT_RAW"
+        OUTPUT_NOTE=""
+    fi
+fi
+
+# Clean up temp file
+rm "$OUTPUT_FILE"
+
+# Sanitize command for notification
+SANITIZED_CMD=$(sanitize_command "$FULL_COMMAND")
+
+# Send notification based on exit code
+if [ $EXIT_CODE -eq 0 ]; then
+    # Success notification
+    MESSAGE="🖥️ Host: $HOSTNAME
+✅ Command: $SANITIZED_CMD
+⏱️ Duration: $DURATION_HUMAN
+🕒 Completed: $END_TIME_HUMAN"
+    
+    if [ -n "$OUTPUT_PREVIEW" ]; then
+        MESSAGE="$MESSAGE
+
+📋 Output:
+$OUTPUT_PREVIEW"
+    fi
+    
+    if [ -n "$OUTPUT_NOTE" ]; then
+        MESSAGE="$MESSAGE
+
+ℹ️ $OUTPUT_NOTE"
+    fi
+    
+    send_notification "✅ $COMMAND_NAME Completed on $HOSTNAME" "$MESSAGE"
+else
+    # Failure notification
+    MESSAGE="🖥️ Host: $HOSTNAME
+❌ Command: $SANITIZED_CMD
+💥 Exit code: $EXIT_CODE
+⏱️ Duration: $DURATION_HUMAN
+🕒 Failed: $END_TIME_HUMAN"
+    
+    if [ -n "$OUTPUT_PREVIEW" ]; then
+        MESSAGE="$MESSAGE
+
+📋 Output/Error:
+$OUTPUT_PREVIEW"
+    fi
+    
+    if [ -n "$OUTPUT_NOTE" ]; then
+        MESSAGE="$MESSAGE
+
+ℹ️ $OUTPUT_NOTE"
+    fi
+    
+    send_notification "❌ $COMMAND_NAME Failed on $HOSTNAME" "$MESSAGE" "high"
+fi
+
+# Exit with the same code as the wrapped command
+exit $EXIT_CODE
