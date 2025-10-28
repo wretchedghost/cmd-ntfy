@@ -1,6 +1,8 @@
 # cmd-ntfy
 Script that runs program and displays info, output, success or fail on command.
 
+Uses [ntfy](https://ntfy.sh/) as the base where you will need to setup your own topic or if you self host it, you will need to point to that domain and topic.
+
 ## Important stuff
 * Copy cmd-ntfy to /usr/local/bin
 * Create and edit /etc/cron-notify.conf
