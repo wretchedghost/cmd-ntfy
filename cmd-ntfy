@@ -1,6 +1,6 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # cmd-ntfy
-# Version: 1.1.0
+# Version: 1.2.0
 # Description: Wrapper script that runs any command and sends ntfy notifications on completion
 # Usage: cmd-ntfy [-v|--verbose] [-t|--tty] <command> [arguments...]
 # Example: cmd-ntfy rsync -av /source /dest
@@ -8,10 +8,12 @@
 # Example: cmd-ntfy -t syncoid -r tank0/enc vault/enc
 # 
 # Changelog:
+# 1.2.0 - Enhanced notification formatting with command context, user, and directory info
+#       - Fixed TTY option parsing bug (option was documented but not parsed)
 # 1.1.0 - Added -t/--tty flag for pseudo-TTY support (progress bars in rsync/syncoid)
 # 1.0.0 - Initial release with hostname support and 30-line output limit
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 
 ### SOURCE NOTIFICATION CONFIG
 if [ -f /etc/cron-notify.conf ]; then
@@ -33,16 +35,25 @@ fi
 curl=/usr/bin/curl
 date=/bin/date
 hostname=/usr/bin/hostname
+whoami=/usr/bin/whoami
+pwd=/bin/pwd
 
-# Get hostname
+# Get hostname and context
 HOSTNAME=$($hostname)
+CURRENT_USER=$($whoami)
+CURRENT_DIR=$($pwd)
 
 # Parse options
 VERBOSE=false
+USE_TTY=false
 while [[ $# -gt 0 ]]; do
     case $1 in
         -v|--verbose)
             VERBOSE=true
+            shift
+            ;;
+        -t|--tty)
+            USE_TTY=true
             shift
             ;;
         --version)
@@ -56,12 +67,14 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Options:"
             echo "  -v, --verbose    Show all output (default: limit to 30 lines)"
+            echo "  -t, --tty        Use pseudo-TTY for progress bars (rsync, syncoid, etc.)"
             echo "  --version        Show version information"
             echo "  -h, --help       Show this help message"
             echo ""
             echo "Examples:"
             echo "  cmd-ntfy rsync -av /source /dest"
             echo "  cmd-ntfy -v zpool status"
+            echo "  cmd-ntfy -t syncoid -r tank0/enc vault/enc"
             echo "  cmd-ntfy apt update"
             echo ""
             echo "Configuration:"
@@ -135,12 +148,14 @@ if [ $# -eq 0 ]; then
     echo ""
     echo "Options:"
     echo "  -v, --verbose    Show all output (default: limit to 30 lines)"
+    echo "  -t, --tty        Use pseudo-TTY for progress bars (rsync, syncoid, etc.)"
     echo "  --version        Show version information"
     echo "  -h, --help       Show this help message"
     echo ""
     echo "Examples:"
     echo "  cmd-ntfy rsync -av /source /dest"
     echo "  cmd-ntfy -v zpool status"
+    echo "  cmd-ntfy -t syncoid -r tank0/enc vault/enc"
     exit 1
 fi
 
@@ -219,48 +234,77 @@ SANITIZED_CMD=$(sanitize_command "$FULL_COMMAND")
 
 # Send notification based on exit code
 if [ $EXIT_CODE -eq 0 ]; then
-    # Success notification
-    MESSAGE="🖥️ Host: $HOSTNAME
-✅ Command: $SANITIZED_CMD
-⏱️ Duration: $DURATION_HUMAN
-🕒 Completed: $END_TIME_HUMAN"
+    # Success notification - ENHANCED FORMAT
+    MESSAGE="╔══════════════════════════════════════
+║ COMMAND EXECUTED
+╚══════════════════════════════════════
+
+🔧 COMMAND:
+   $SANITIZED_CMD
+
+📍 CONTEXT:
+   🖥️  Host: $HOSTNAME
+   👤 User: $CURRENT_USER
+   📁 Dir:  $CURRENT_DIR
+
+⏱️  TIMING:
+   Duration: $DURATION_HUMAN
+   Completed: $END_TIME_HUMAN
+
+✅ EXIT CODE: 0 (Success)"
     
     if [ -n "$OUTPUT_PREVIEW" ]; then
         MESSAGE="$MESSAGE
 
-📋 Output:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 OUTPUT:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 $OUTPUT_PREVIEW"
     fi
     
     if [ -n "$OUTPUT_NOTE" ]; then
         MESSAGE="$MESSAGE
 
-ℹ️ $OUTPUT_NOTE"
+ℹ️  $OUTPUT_NOTE"
     fi
     
-    send_notification "✅ $COMMAND_NAME Completed on $HOSTNAME" "$MESSAGE"
+    send_notification "✅ $COMMAND_NAME → Success on $HOSTNAME" "$MESSAGE"
 else
-    # Failure notification
-    MESSAGE="🖥️ Host: $HOSTNAME
-❌ Command: $SANITIZED_CMD
-💥 Exit code: $EXIT_CODE
-⏱️ Duration: $DURATION_HUMAN
-🕒 Failed: $END_TIME_HUMAN"
+    # Failure notification - ENHANCED FORMAT
+    MESSAGE="╔══════════════════════════════════════
+║ COMMAND FAILED
+╚══════════════════════════════════════
+
+🔧 COMMAND:
+   $SANITIZED_CMD
+
+📍 CONTEXT:
+   🖥️  Host: $HOSTNAME
+   👤 User: $CURRENT_USER
+   📁 Dir:  $CURRENT_DIR
+
+⏱️  TIMING:
+   Duration: $DURATION_HUMAN
+   Failed: $END_TIME_HUMAN
+
+❌ EXIT CODE: $EXIT_CODE (Failed)"
     
     if [ -n "$OUTPUT_PREVIEW" ]; then
         MESSAGE="$MESSAGE
 
-📋 Output/Error:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 OUTPUT/ERROR:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 $OUTPUT_PREVIEW"
     fi
     
     if [ -n "$OUTPUT_NOTE" ]; then
         MESSAGE="$MESSAGE
 
-ℹ️ $OUTPUT_NOTE"
+ℹ️  $OUTPUT_NOTE"
     fi
     
-    send_notification "❌ $COMMAND_NAME Failed on $HOSTNAME" "$MESSAGE" "high"
+    send_notification "❌ $COMMAND_NAME → Failed on $HOSTNAME" "$MESSAGE" "high"
 fi
 
 # Exit with the same code as the wrapped command
