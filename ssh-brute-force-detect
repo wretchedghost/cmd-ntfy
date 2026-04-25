@@ -1,0 +1,26 @@
+#!/bin/bash
+source /etc/cron-notify.conf
+
+HOSTNAME=$(hostname)
+THRESHOLD=10  # Failed attempts from same IP
+TIMEFRAME=10  # minutes
+
+# Find IPs with multiple failed attempts
+ATTACKERS=$(journalctl -u ssh -S "${TIMEFRAME} minutes ago" | \
+            grep -E "Invalid user|authenticating user.*\[preauth\]|Connection (closed|reset) by [0-9]" | \
+            grep -oP '\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b' | \
+            sort | uniq -c | \
+            awk -v thresh=$THRESHOLD '$1 >= thresh {print $1" attempts from "$2}')
+
+if [ -n "$ATTACKERS" ]; then
+    curl -H "Title: 🚨 BRUTE FORCE DETECTED on $HOSTNAME" \
+         -H "Priority: urgent" \
+         -d "Potential brute force attack detected!
+
+$ATTACKERS
+
+Action: Consider blocking these IPs with fail2ban or firewall
+
+Check logs: journalctl -u ssh -n 100" \
+         "$NTFY_SERVER/$NTFY_TOPIC" 2>/dev/null
+fi
