@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # cmd-ntfy
 # Version: 1.2.0
 # Description: Wrapper script that runs any command and sends ntfy notifications on completion
@@ -8,12 +8,24 @@
 # Example: cmd-ntfy -t syncoid -r tank0/enc vault/enc
 # 
 # Changelog:
-# 1.2.0 - Enhanced notification formatting with command context, user, and directory info
-#       - Fixed TTY option parsing bug (option was documented but not parsed)
+# 1.2.0 - Fixed -t/--tty flag: was documented but never parsed (USE_TTY was
+#         never set, so the whole TTY code path was dead). Added curl error
+#         handling with local fallback log on send failure. Added config
+#         validation warning. Added byte-size cap on notification body to
+#         stay under ntfy's default 4096-byte message limit. Switched
+#         hardcoded /usr/bin paths to rely on $PATH for cross-distro use.
 # 1.1.0 - Added -t/--tty flag for pseudo-TTY support (progress bars in rsync/syncoid)
 # 1.0.0 - Initial release with hostname support and 30-line output limit
 
 VERSION="1.2.0"
+
+# Max bytes for the notification body (ntfy's default server limit is 4096
+# bytes total per message; leave headroom for title/emoji/formatting).
+NTFY_MAX_BODY_BYTES=3500
+
+# Local fallback log if a notification send fails (network down, server
+# unreachable, etc.) - so failures aren't silent.
+NTFY_FALLBACK_LOG="/var/log/cmd-ntfy-failed.log"
 
 ### SOURCE NOTIFICATION CONFIG
 if [ -f /etc/cron-notify.conf ]; then
@@ -31,17 +43,19 @@ else
     NTFY_PASS=""
 fi
 
-# Full paths for utilities
-curl=/usr/bin/curl
-date=/bin/date
-hostname=/usr/bin/hostname
-whoami=/usr/bin/whoami
-pwd=/bin/pwd
+if [ -z "$NTFY_SERVER" ] || [ -z "$NTFY_TOPIC" ]; then
+    echo "Warning: NTFY_SERVER or NTFY_TOPIC is not set (check /etc/cron-notify.conf)." >&2
+    echo "The wrapped command will still run, but notifications will fail." >&2
+fi
 
-# Get hostname and context
+# Rely on $PATH rather than hardcoding paths - keeps this working
+# unmodified across Debian, Arch, etc. where install locations can differ.
+curl=curl
+date=date
+hostname=hostname
+
+# Get hostname
 HOSTNAME=$($hostname)
-CURRENT_USER=$($whoami)
-CURRENT_DIR=$($pwd)
 
 # Parse options
 VERBOSE=false
@@ -67,7 +81,7 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Options:"
             echo "  -v, --verbose    Show all output (default: limit to 30 lines)"
-            echo "  -t, --tty        Use pseudo-TTY for progress bars (rsync, syncoid, etc.)"
+            echo "  -t, --tty        Use pseudo-TTY (preserves progress bars in rsync/syncoid)"
             echo "  --version        Show version information"
             echo "  -h, --help       Show this help message"
             echo ""
@@ -75,7 +89,6 @@ while [[ $# -gt 0 ]]; do
             echo "  cmd-ntfy rsync -av /source /dest"
             echo "  cmd-ntfy -v zpool status"
             echo "  cmd-ntfy -t syncoid -r tank0/enc vault/enc"
-            echo "  cmd-ntfy apt update"
             echo ""
             echo "Configuration:"
             echo "  Create /etc/cron-notify.conf with:"
@@ -101,18 +114,33 @@ send_notification() {
     local title="$1"
     local message="$2"
     local priority="${3:-default}"
-    
+    local http_code
+    local curl_status
+
     if [ -n "$NTFY_USER" ] && [ -n "$NTFY_PASS" ]; then
-        $curl -u "$NTFY_USER:$NTFY_PASS" \
+        http_code=$($curl -sS -o /dev/null -w "%{http_code}" \
+              -u "$NTFY_USER:$NTFY_PASS" \
               -H "Title: $title" \
               -H "Priority: $priority" \
               -d "$message" \
-              "$NTFY_SERVER/$NTFY_TOPIC" 2>/dev/null
+              "$NTFY_SERVER/$NTFY_TOPIC")
+        curl_status=$?
     else
-        $curl -H "Title: $title" \
+        http_code=$($curl -sS -o /dev/null -w "%{http_code}" \
+              -H "Title: $title" \
               -H "Priority: $priority" \
               -d "$message" \
-              "$NTFY_SERVER/$NTFY_TOPIC" 2>/dev/null
+              "$NTFY_SERVER/$NTFY_TOPIC")
+        curl_status=$?
+    fi
+
+    if [ "$curl_status" -ne 0 ] || [ "$http_code" != "200" ]; then
+        {
+            echo "[$($date)] Failed to send notification (curl_status=$curl_status http_code=$http_code)"
+            echo "  Title: $title"
+            echo "  Message: $message"
+        } >> "$NTFY_FALLBACK_LOG" 2>/dev/null
+        echo "Warning: ntfy notification failed (http_code=$http_code) - logged to $NTFY_FALLBACK_LOG" >&2
     fi
 }
 
@@ -148,14 +176,12 @@ if [ $# -eq 0 ]; then
     echo ""
     echo "Options:"
     echo "  -v, --verbose    Show all output (default: limit to 30 lines)"
-    echo "  -t, --tty        Use pseudo-TTY for progress bars (rsync, syncoid, etc.)"
     echo "  --version        Show version information"
     echo "  -h, --help       Show this help message"
     echo ""
     echo "Examples:"
     echo "  cmd-ntfy rsync -av /source /dest"
     echo "  cmd-ntfy -v zpool status"
-    echo "  cmd-ntfy -t syncoid -r tank0/enc vault/enc"
     exit 1
 fi
 
@@ -232,79 +258,59 @@ rm "$OUTPUT_FILE"
 # Sanitize command for notification
 SANITIZED_CMD=$(sanitize_command "$FULL_COMMAND")
 
+# Belt-and-suspenders: even after the 30-line cap, a handful of very long
+# lines (wide `zpool status -v`, verbose rsync paths, etc.) can still blow
+# past ntfy's message size limit. Hard-cap the preview in bytes too.
+OUTPUT_PREVIEW_BYTES=$(printf '%s' "$OUTPUT_PREVIEW" | wc -c)
+if [ "$OUTPUT_PREVIEW_BYTES" -gt "$NTFY_MAX_BODY_BYTES" ]; then
+    OUTPUT_PREVIEW=$(printf '%s' "$OUTPUT_PREVIEW" | head -c "$NTFY_MAX_BODY_BYTES")
+    OUTPUT_NOTE="Output truncated to ${NTFY_MAX_BODY_BYTES} bytes (total: $OUTPUT_LINES lines / $OUTPUT_SIZE bytes, use -v for full output)"
+fi
+
 # Send notification based on exit code
 if [ $EXIT_CODE -eq 0 ]; then
-    # Success notification - ENHANCED FORMAT
-    MESSAGE="╔══════════════════════════════════════
-║ COMMAND EXECUTED
-╚══════════════════════════════════════
-
-🔧 COMMAND:
-   $SANITIZED_CMD
-
-📍 CONTEXT:
-   🖥️  Host: $HOSTNAME
-   👤 User: $CURRENT_USER
-   📁 Dir:  $CURRENT_DIR
-
-⏱️  TIMING:
-   Duration: $DURATION_HUMAN
-   Completed: $END_TIME_HUMAN
-
-✅ EXIT CODE: 0 (Success)"
+    # Success notification
+    MESSAGE="🖥️ Host: $HOSTNAME
+✅ Command: $SANITIZED_CMD
+⏱️ Duration: $DURATION_HUMAN
+🕒 Completed: $END_TIME_HUMAN"
     
     if [ -n "$OUTPUT_PREVIEW" ]; then
         MESSAGE="$MESSAGE
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📋 OUTPUT:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 Output:
 $OUTPUT_PREVIEW"
     fi
     
     if [ -n "$OUTPUT_NOTE" ]; then
         MESSAGE="$MESSAGE
 
-ℹ️  $OUTPUT_NOTE"
+ℹ️ $OUTPUT_NOTE"
     fi
     
-    send_notification "✅ $COMMAND_NAME → Success on $HOSTNAME" "$MESSAGE"
+    send_notification "✅ $COMMAND_NAME Completed on $HOSTNAME" "$MESSAGE"
 else
-    # Failure notification - ENHANCED FORMAT
-    MESSAGE="╔══════════════════════════════════════
-║ COMMAND FAILED
-╚══════════════════════════════════════
-
-🔧 COMMAND:
-   $SANITIZED_CMD
-
-📍 CONTEXT:
-   🖥️  Host: $HOSTNAME
-   👤 User: $CURRENT_USER
-   📁 Dir:  $CURRENT_DIR
-
-⏱️  TIMING:
-   Duration: $DURATION_HUMAN
-   Failed: $END_TIME_HUMAN
-
-❌ EXIT CODE: $EXIT_CODE (Failed)"
+    # Failure notification
+    MESSAGE="🖥️ Host: $HOSTNAME
+❌ Command: $SANITIZED_CMD
+💥 Exit code: $EXIT_CODE
+⏱️ Duration: $DURATION_HUMAN
+🕒 Failed: $END_TIME_HUMAN"
     
     if [ -n "$OUTPUT_PREVIEW" ]; then
         MESSAGE="$MESSAGE
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📋 OUTPUT/ERROR:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 Output/Error:
 $OUTPUT_PREVIEW"
     fi
     
     if [ -n "$OUTPUT_NOTE" ]; then
         MESSAGE="$MESSAGE
 
-ℹ️  $OUTPUT_NOTE"
+ℹ️ $OUTPUT_NOTE"
     fi
     
-    send_notification "❌ $COMMAND_NAME → Failed on $HOSTNAME" "$MESSAGE" "high"
+    send_notification "❌ $COMMAND_NAME Failed on $HOSTNAME" "$MESSAGE" "high"
 fi
 
 # Exit with the same code as the wrapped command
