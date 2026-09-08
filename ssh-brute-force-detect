@@ -1,9 +1,49 @@
 #!/bin/bash
-source /etc/cron-notify.conf
+# ssh-brute-ban.sh
+# Version: 1.1.0
+# Description: Scans recent sshd logs for IPs with repeated failed auth
+#              attempts, bans any new ones via ufw, and sends an ntfy
+#              notification only when a new ban actually happens.
+# Usage: run via cron, e.g. every 5 minutes
+#
+# Changelog:
+# 1.1.0 - Fixed curl payload using literal "\n" text instead of real
+#         newlines (ntfy showed the raw backslash-n, not a line break).
+#         Fixed already-banned check: plain `grep -q "$ip"` did substring
+#         matching, so a banned 1.2.3.4 would also false-match a new
+#         attacker at 1.2.3.40. Now uses a boundary-safe match.
+#         Added NTFY_SERVER/NTFY_TOPIC validation warning.
+#         Notification now only fires when at least one IP was newly
+#         banned this run - previously it re-sent an alert every single
+#         cron cycle for an ongoing but already-blocked attack.
+#         Caches `ufw status` once per run instead of once per IP checked.
+# 1.0.0 - Initial version
+
+if [ -f /etc/cron-notify.conf ]; then
+    source /etc/cron-notify.conf
+else
+    echo "Warning: /etc/cron-notify.conf not found - notifications will fail." >&2
+    NTFY_SERVER=""
+    NTFY_TOPIC=""
+fi
+
+if [ -z "$NTFY_SERVER" ] || [ -z "$NTFY_TOPIC" ]; then
+    echo "Warning: NTFY_SERVER or NTFY_TOPIC is not set (check /etc/cron-notify.conf)." >&2
+fi
 
 HOSTNAME=$(hostname)
 THRESHOLD=10
-TIMEFRAME=12
+TIMEFRAME=12  # minutes
+
+# Returns true if $1 is already banned in ufw. Uses boundary-safe matching
+# against a cached `ufw status` snapshot so e.g. "1.2.3.4" doesn't
+# false-match against "1.2.3.40".
+is_already_banned() {
+    local ip="$1"
+    local ip_escaped
+    ip_escaped=$(printf '%s' "$ip" | sed 's/\./\\./g')
+    printf '%s\n' "$UFW_STATUS" | grep -qE "(^|[^0-9.])${ip_escaped}([^0-9.]|$)"
+}
 
 # Find IPs with multiple failed attempts
 ATTACKERS=$(journalctl -u ssh -S "${TIMEFRAME} minutes ago" | \
@@ -13,24 +53,30 @@ ATTACKERS=$(journalctl -u ssh -S "${TIMEFRAME} minutes ago" | \
             awk -v thresh=$THRESHOLD '$1 >= thresh {print $1" "$2}')
 
 if [ -n "$ATTACKERS" ]; then
-    BANNED_IPS=""
+    UFW_STATUS=$(ufw status)
+    NEW_BANS=""
+    ALREADY_BANNED=""
 
     while read -r count ip; do
-        # Skip if already banned
-        if ! ufw status | grep -q "$ip"; then
-            ufw deny from "$ip" to any comment "ssh-bruteforce auto-ban"
-            BANNED_IPS="$BANNED_IPS\nBanned: $ip ($count attempts)"
+        if is_already_banned "$ip"; then
+            ALREADY_BANNED="${ALREADY_BANNED}
+Already banned: $ip ($count attempts)"
         else
-            BANNED_IPS="$BANNED_IPS\nAlready banned: $ip ($count attempts)"
+            ufw deny from "$ip" to any comment "ssh-bruteforce auto-ban"
+            NEW_BANS="${NEW_BANS}
+Banned: $ip ($count attempts)"
         fi
     done <<< "$ATTACKERS"
 
-    curl -H "Title: 🚨 BRUTE FORCE DETECTED on $HOSTNAME" \
-         -H "Priority: urgent" \
-         -d "Potential brute force attack detected!
-
-$BANNED_IPS
+    # Only notify when something new actually happened - an ongoing but
+    # already-blocked attack shouldn't re-alert every cron cycle.
+    if [ -n "$NEW_BANS" ]; then
+        curl -H "Title: 🚨 BRUTE FORCE DETECTED on $HOSTNAME" \
+             -H "Priority: urgent" \
+             -d "Potential brute force attack detected!
+$NEW_BANS$ALREADY_BANNED
 
 Check logs: journalctl -u ssh -n 100" \
-         "$NTFY_SERVER/$NTFY_TOPIC" 2>/dev/null
+             "$NTFY_SERVER/$NTFY_TOPIC" 2>/dev/null
+    fi
 fi
