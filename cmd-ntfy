@@ -1,13 +1,24 @@
 #!/bin/bash
 # cmd-ntfy
-# Version: 1.2.0
+# Version: 1.3.0
 # Description: Wrapper script that runs any command and sends ntfy notifications on completion
-# Usage: cmd-ntfy [-v|--verbose] [-t|--tty] <command> [arguments...]
+# Usage: cmd-ntfy [-v|--verbose] [-t|--tty] [-n|--name <name>] <command> [arguments...]
 # Example: cmd-ntfy rsync -av /source /dest
 # Example: cmd-ntfy -v zpool status
 # Example: cmd-ntfy -t syncoid -r tank0/enc vault/enc
-# 
+# Example: cmd-ntfy -n "SCADA DB Backup" rsync -av /var/lib/mysql/ backup-host:/backups/scada/
+#
 # Changelog:
+# 1.3.0 - Added -n/--name flag: sets a friendly service name shown in the
+#         notification title instead of just the raw command name. Useful
+#         when the same command (e.g. rsync) runs different jobs and you
+#         need to tell them apart at a glance on mobile.
+#         Changed default (non-verbose) output preview from "first 30
+#         lines" to "last N lines" (default 10, override with
+#         SUMMARY_LINES in /etc/cron-notify.conf) since command summaries
+#         (rsync stats, zpool status conclusion, syncoid completion)
+#         usually appear at the end of output, not the start. -v/--verbose
+#         still shows full output as before.
 # 1.2.0 - Fixed -t/--tty flag: was documented but never parsed (USE_TTY was
 #         never set, so the whole TTY code path was dead). Added curl error
 #         handling with local fallback log on send failure. Added config
@@ -17,7 +28,7 @@
 # 1.1.0 - Added -t/--tty flag for pseudo-TTY support (progress bars in rsync/syncoid)
 # 1.0.0 - Initial release with hostname support and 30-line output limit
 
-VERSION="1.2.0"
+VERSION="1.3.0"
 
 # Max bytes for the notification body (ntfy's default server limit is 4096
 # bytes total per message; leave headroom for title/emoji/formatting).
@@ -48,6 +59,13 @@ if [ -z "$NTFY_SERVER" ] || [ -z "$NTFY_TOPIC" ]; then
     echo "The wrapped command will still run, but notifications will fail." >&2
 fi
 
+# Number of lines to show in the notification body by default (most recent
+# lines, since command summaries - rsync stats, zpool status conclusion,
+# syncoid completion - usually appear at the end of output, not the start).
+# Can be overridden by setting SUMMARY_LINES in /etc/cron-notify.conf.
+# Full output is still available via -v/--verbose.
+SUMMARY_LINES=${SUMMARY_LINES:-10}
+
 # Rely on $PATH rather than hardcoding paths - keeps this working
 # unmodified across Debian, Arch, etc. where install locations can differ.
 curl=curl
@@ -60,6 +78,7 @@ HOSTNAME=$($hostname)
 # Parse options
 VERBOSE=false
 USE_TTY=false
+SERVICE_NAME=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         -v|--verbose)
@@ -69,6 +88,10 @@ while [[ $# -gt 0 ]]; do
         -t|--tty)
             USE_TTY=true
             shift
+            ;;
+        -n|--name)
+            SERVICE_NAME="$2"
+            shift 2
             ;;
         --version)
             echo "cmd-ntfy version $VERSION"
@@ -80,8 +103,9 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: cmd-ntfy [OPTIONS] <command> [arguments...]"
             echo ""
             echo "Options:"
-            echo "  -v, --verbose    Show all output (default: limit to 30 lines)"
+            echo "  -v, --verbose    Show all output (default: last $SUMMARY_LINES lines as summary)"
             echo "  -t, --tty        Use pseudo-TTY (preserves progress bars in rsync/syncoid)"
+            echo "  -n, --name NAME  Friendly name shown in the notification title (default: command name)"
             echo "  --version        Show version information"
             echo "  -h, --help       Show this help message"
             echo ""
@@ -89,6 +113,7 @@ while [[ $# -gt 0 ]]; do
             echo "  cmd-ntfy rsync -av /source /dest"
             echo "  cmd-ntfy -v zpool status"
             echo "  cmd-ntfy -t syncoid -r tank0/enc vault/enc"
+            echo "  cmd-ntfy -n \"SCADA DB Backup\" rsync -av /var/lib/mysql/ backup-host:/backups/scada/"
             echo ""
             echo "Configuration:"
             echo "  Create /etc/cron-notify.conf with:"
@@ -96,6 +121,7 @@ while [[ $# -gt 0 ]]; do
             echo "    NTFY_TOPIC=\"your-topic\""
             echo "    NTFY_USER=\"username\"  # optional"
             echo "    NTFY_PASS=\"password\"  # optional"
+            echo "    SUMMARY_LINES=10        # optional, lines shown in non-verbose mode"
             exit 0
             ;;
         -*)
@@ -150,7 +176,7 @@ get_duration() {
     local hours=$((duration / 3600))
     local minutes=$(((duration % 3600) / 60))
     local seconds=$((duration % 60))
-    
+
     if [ $hours -gt 0 ]; then
         echo "${hours}h ${minutes}m ${seconds}s"
     elif [ $minutes -gt 0 ]; then
@@ -175,13 +201,16 @@ if [ $# -eq 0 ]; then
     echo "Usage: cmd-ntfy [OPTIONS] <command> [arguments...]"
     echo ""
     echo "Options:"
-    echo "  -v, --verbose    Show all output (default: limit to 30 lines)"
+    echo "  -v, --verbose    Show all output (default: last $SUMMARY_LINES lines as summary)"
+    echo "  -t, --tty        Use pseudo-TTY (preserves progress bars in rsync/syncoid)"
+    echo "  -n, --name NAME  Friendly name shown in the notification title (default: command name)"
     echo "  --version        Show version information"
     echo "  -h, --help       Show this help message"
     echo ""
     echo "Examples:"
     echo "  cmd-ntfy rsync -av /source /dest"
     echo "  cmd-ntfy -v zpool status"
+    echo "  cmd-ntfy -n \"SCADA DB Backup\" rsync -av /source /dest"
     exit 1
 fi
 
@@ -189,13 +218,17 @@ fi
 FULL_COMMAND="$*"
 COMMAND_NAME=$(basename "$1")
 
+# Name shown in the notification title - the friendly -n/--name value if
+# given, otherwise falls back to the raw command name as before.
+DISPLAY_NAME="${SERVICE_NAME:-$COMMAND_NAME}"
+
 # Record start time
 START_TIME=$(date +%s)
 START_TIME_HUMAN=$($date)
 
 # Optional: Send start notification (uncomment if desired)
 # SANITIZED_CMD=$(sanitize_command "$FULL_COMMAND")
-# send_notification "🔄 Command Started: $COMMAND_NAME" "Host: $HOSTNAME"$'\n'"Command: $SANITIZED_CMD"$'\n'"Started: $START_TIME_HUMAN"
+# send_notification "🔄 Command Started: $DISPLAY_NAME" "Host: $HOSTNAME"$'\n'"Command: $SANITIZED_CMD"$'\n'"Started: $START_TIME_HUMAN"
 
 # Execute the command and capture output and exit code
 OUTPUT_FILE=$(mktemp)
@@ -213,7 +246,7 @@ if $USE_TTY; then
     # Use script command to create a pseudo-TTY for progress bars
     # Build command string with proper quoting to preserve arguments
     CMD_STRING=$(printf '%q ' "$@")
-    
+
     # script outputs to both terminal AND file, so user sees real-time output
     # -q: quiet mode (no start/stop messages)
     # -c: run command
@@ -232,20 +265,23 @@ END_TIME_HUMAN=$($date)
 DURATION=$((END_TIME - START_TIME))
 DURATION_HUMAN=$(get_duration $DURATION)
 
-# Get the complete output and apply line limit if not verbose
+# Get the complete output and apply summary limit if not verbose
 OUTPUT_RAW="$(cat "$OUTPUT_FILE")"
 OUTPUT_SIZE=$(wc -c < "$OUTPUT_FILE")
 OUTPUT_LINES=$(wc -l < "$OUTPUT_FILE")
+OUTPUT_LABEL="📋 Output:"
 
 if $VERBOSE; then
     # Verbose mode: show all output
     OUTPUT_PREVIEW="$OUTPUT_RAW"
     OUTPUT_NOTE=""
 else
-    # Limited mode: show first 30 lines
-    if [ $OUTPUT_LINES -gt 30 ]; then
-        OUTPUT_PREVIEW="$(head -n 30 "$OUTPUT_FILE")"
-        OUTPUT_NOTE="Output limited to 30 lines (total: $OUTPUT_LINES lines, use -v for full output)"
+    # Summary mode: show the last N lines, since summaries/results from
+    # rsync, zpool, syncoid, etc. typically appear at the end of output.
+    OUTPUT_LABEL="📋 Summary:"
+    if [ $OUTPUT_LINES -gt $SUMMARY_LINES ]; then
+        OUTPUT_PREVIEW="$(tail -n "$SUMMARY_LINES" "$OUTPUT_FILE")"
+        OUTPUT_NOTE="Showing last $SUMMARY_LINES lines (total: $OUTPUT_LINES lines, use -v for full output)"
     else
         OUTPUT_PREVIEW="$OUTPUT_RAW"
         OUTPUT_NOTE=""
@@ -258,7 +294,7 @@ rm "$OUTPUT_FILE"
 # Sanitize command for notification
 SANITIZED_CMD=$(sanitize_command "$FULL_COMMAND")
 
-# Belt-and-suspenders: even after the 30-line cap, a handful of very long
+# Belt-and-suspenders: even after the line cap, a handful of very long
 # lines (wide `zpool status -v`, verbose rsync paths, etc.) can still blow
 # past ntfy's message size limit. Hard-cap the preview in bytes too.
 OUTPUT_PREVIEW_BYTES=$(printf '%s' "$OUTPUT_PREVIEW" | wc -c)
@@ -274,21 +310,21 @@ if [ $EXIT_CODE -eq 0 ]; then
 ✅ Command: $SANITIZED_CMD
 ⏱️ Duration: $DURATION_HUMAN
 🕒 Completed: $END_TIME_HUMAN"
-    
+
     if [ -n "$OUTPUT_PREVIEW" ]; then
         MESSAGE="$MESSAGE
 
-📋 Output:
+$OUTPUT_LABEL
 $OUTPUT_PREVIEW"
     fi
-    
+
     if [ -n "$OUTPUT_NOTE" ]; then
         MESSAGE="$MESSAGE
 
 ℹ️ $OUTPUT_NOTE"
     fi
-    
-    send_notification "✅ $COMMAND_NAME Completed on $HOSTNAME" "$MESSAGE"
+
+    send_notification "✅ $DISPLAY_NAME Completed on $HOSTNAME" "$MESSAGE"
 else
     # Failure notification
     MESSAGE="🖥️ Host: $HOSTNAME
@@ -296,21 +332,21 @@ else
 💥 Exit code: $EXIT_CODE
 ⏱️ Duration: $DURATION_HUMAN
 🕒 Failed: $END_TIME_HUMAN"
-    
+
     if [ -n "$OUTPUT_PREVIEW" ]; then
         MESSAGE="$MESSAGE
 
-📋 Output/Error:
+$OUTPUT_LABEL
 $OUTPUT_PREVIEW"
     fi
-    
+
     if [ -n "$OUTPUT_NOTE" ]; then
         MESSAGE="$MESSAGE
 
 ℹ️ $OUTPUT_NOTE"
     fi
-    
-    send_notification "❌ $COMMAND_NAME Failed on $HOSTNAME" "$MESSAGE" "high"
+
+    send_notification "❌ $DISPLAY_NAME Failed on $HOSTNAME" "$MESSAGE" "high"
 fi
 
 # Exit with the same code as the wrapped command
